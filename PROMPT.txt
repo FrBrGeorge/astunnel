@@ -40,7 +40,8 @@ Accumulate outbound packets inside a queue and flush them together. Force flush 
 
 ## Multi-Client Tracking & IP Translation
 - Multiple client sockets are supported over a single server listener. Each client is identified by a 4-octet `client_id` (IP style).
-- Backends provide translation functions connecting `client_id` with payload formats (e.g., mapping client_id into a fully compliant IPv6 address string).
+- Server supports setting up a client IDs pool in standard network/bits CIDR format via `--pool` parameter (default `10.0.0.0/24`), reserving the first address of the pool for the server.
+- Backends provide translation functions connecting `client_id` with payload formats, generating IPv6 addresses inside the Unique Local Address (ULA) range (`fc00::/7`, specifically utilizing `fd00::` and embedding the 4-byte client ID).
 
 ## Backends Ecosystem
 - **Test Echo Backend**: Returns the packet to client (Server echoes it back). It processes client-side filter options: e.g. if `--packet-type-filter` is 4, only IPv4 packets are bounced back; IPv6 are dropped.
@@ -55,7 +56,7 @@ Accumulate outbound packets inside a queue and flush them together. Force flush 
 ## CLI Cascade & Execution Commands
 - Use a cascaded `argparse` configuration:
   - **Common options** inherited by both subcommands: log levels, `--logfile`, `--padding` (modes: `none`, `full`, `random`), and `--timeout`.
-  - **`server` subcommand**: configures binding with `--bind` (IP) and `--port` parameters, and `--pem` certification files.
+  - **`server` subcommand**: configures binding with `--bind` (IP), `--port` parameters, `--pem` certification files, and `--pool` client IP pool.
   - **`client` subcommand**: accepts positional `server` argument in `host:port` format, `--ssl-mode`, and `--client-id` identity.
 - Code reuse: Keep common components cleanly separated in `common.py` within the `astunnel` package.
 - No inline constants: Declare variables clearly at script headers.

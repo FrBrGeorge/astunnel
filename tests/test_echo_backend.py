@@ -45,10 +45,10 @@ class TestEchoBackend(unittest.TestCase):
         self.assertEqual(cid, bytes([10, 0, 1, 99]))
 
     def test_convert_client_id_to_ipv6(self):
-        """Checks API functions converting 4-octet Client ID to RFC 4291 IPv4-mapped IPv6."""
+        """Checks API functions converting 4-octet Client ID to dynamic ULA (fc00::/7) IPv6 address."""
         cid = bytes([192, 168, 1, 5])
         ipv6_str = self.backend.convert_client_id_to_ipv6(cid)
-        self.assertEqual(ipv6_str, "::ffff:192.168.1.5")
+        self.assertEqual(ipv6_str, "fd00::c0a8:105")
 
     def test_inject_client_id(self):
         """Verifies Client ID gets correctly written back into the IP payload header bytes."""

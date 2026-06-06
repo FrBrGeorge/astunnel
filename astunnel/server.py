@@ -7,6 +7,7 @@ import ssl
 import struct
 import asyncio
 import logging
+import ipaddress
 import subprocess
 from pathlib import Path
 from typing import Dict, Set, Tuple, Optional, Any
@@ -67,6 +68,7 @@ class TunnelServer:
         pem_path: str = DEFAULT_PEM_FILE,
         padding_mode: int = PADDING_NONE,
         sync_timeout: float = DEFAULT_SYNC_TIMEOUT,
+        pool: str = "10.0.0.0/24",
         console_level: str = "WARNING",
         logfile: Optional[str] = None,
         file_level: str = "INFO",
@@ -79,7 +81,9 @@ class TunnelServer:
         self.logger = setup_logger(console_level, logfile, file_level)
 
         self.sessions: Dict[bytes, ClientSession] = {}
-        self.next_client_id_suffix = 1  # For auto-generating client IDs: e.g. 10.0.0.x
+        self.pool = ipaddress.ip_network(pool)
+        self.server_id = self.pool[0].packed
+        self.next_client_offset = 1
         self.is_running = False
         self._flusher_task: Optional[asyncio.Task] = None
 
@@ -143,14 +147,20 @@ class TunnelServer:
         return ctx
 
     def allocate_client_id(self) -> bytes:
-        """Generates a unique 4-octet Client ID resembling a 10.0.0.x IPv4 address."""
-        while True:
-            ip_bytes = bytes([10, 0, 0, self.next_client_id_suffix])
-            self.next_client_id_suffix = (self.next_client_id_suffix + 1) % 254
-            if self.next_client_id_suffix == 0:
-                self.next_client_id_suffix = 1
+        """Generates a unique 4-octet Client ID from the configured subnet pool config."""
+        num_addresses = self.pool.num_addresses
+        attempts = 0
+        while attempts < num_addresses - 1:
+            addr = self.pool[self.next_client_offset]
+            self.next_client_offset += 1
+            if self.next_client_offset >= num_addresses:
+                self.next_client_offset = 1  # loop back to 1 (skipping index 0)
+            
+            ip_bytes = addr.packed
             if ip_bytes not in self.sessions:
                 return ip_bytes
+            attempts += 1
+        raise RuntimeError("No available Client IDs in the pool subnet.")
 
     async def handle_client_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -211,6 +221,13 @@ class TunnelServer:
         if requested_client_id == b"\x00\x00\x00\x00":
             assigned_id = self.allocate_client_id()
         else:
+            if requested_client_id == self.server_id:
+                self.logger.error("Client ID %s is reserved for the server. Closing.", requested_client_id.hex())
+                err_pkt = Packet(VERSION_MGMT, MGMT_ERROR, b"Client ID is reserved for the server")
+                writer.write(err_pkt.to_bytes())
+                await writer.drain()
+                writer.close()
+                return
             if requested_client_id in self.sessions:
                 self.logger.error("Client ID %s already in use. Closing.", requested_client_id.hex())
                 # Send MGMT_ERROR

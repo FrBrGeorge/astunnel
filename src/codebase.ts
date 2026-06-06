@@ -223,6 +223,7 @@ import ssl
 import struct
 import asyncio
 import logging
+import ipaddress
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -241,13 +242,16 @@ from astunnel.common import (
 class TunnelServer:
     def __init__(
         self,
-        host: str = "0.0.0.0",
+        bind: str = "0.0.0.0",
         port: int = 18443,
         pem_path: str = "server.pem",
+        pool: str = "10.0.0.0/24",
     ):
-        self.host = host
+        self.bind = bind
         self.port = port
         self.pem_path = Path(pem_path)
+        self.pool = ipaddress.ip_network(pool)
+        self.server_id = self.pool[0].packed
         self.sessions = {}
 
     def generate_self_signed_pem(self) -> None:
@@ -341,6 +345,7 @@ Base class definition for packet-tunneling backends.
 Provides interfaces for Client ID extraction, conversion, and injections.
 """
 
+import ipaddress
 from typing import Dict, Any
 
 class BaseBackend:
@@ -375,9 +380,9 @@ class BaseBackend:
 
     def convert_client_id_to_ipv6(self, client_id: bytes) -> str:
         if len(client_id) != 4:
-            return "::1"
-        ip_str = f"{client_id[0]}.{client_id[1]}.{client_id[2]}.{client_id[3]}"
-        return f"::ffff:{ip_str}"
+            return "fd00::1"
+        addr_bytes = b"\\xfd\\x00" + b"\\x00" * 10 + client_id
+        return str(ipaddress.IPv6Address(addr_bytes))
 
     def process_packet(self, pkt: Any, client_id: bytes) -> Any:
         return None
@@ -537,6 +542,29 @@ class TestBuncher(unittest.TestCase):
         self.assertEqual(p1.version, VERSION_IPV4)
         self.assertEqual(p2.version, VERSION_PADDING)
         self.assertEqual(c1 + c2, 50)
+
+
+class TestTunnelServerPool(unittest.TestCase):
+    """Verifies that TunnelServer client IP pool allocation works and reserves the first address."""
+
+    def test_pool_allocation_and_reservation(self):
+        from astunnel.server import TunnelServer
+        server = TunnelServer(pool="10.1.2.0/29")
+        # 10.1.2.0/29 has 8 addresses: 10.1.2.0 to 10.1.2.7.
+        # The first address (10.1.2.0) is reserved for server.
+        self.assertEqual(server.server_id, bytes([10, 1, 2, 0]))
+
+        # Dynamic allocation should start at 10.1.2.1 and proceed up to 10.1.2.7 (skipping 10.1.2.0)
+        allocated_ids = []
+        for _ in range(7):
+            allocated_ids.append(server.allocate_client_id())
+
+        self.assertEqual(allocated_ids[0], bytes([10, 1, 2, 1]))
+        self.assertEqual(allocated_ids[-1], bytes([10, 1, 2, 7]))
+
+        # Next attempts should raise RuntimeError as pool is full
+        with self.assertRaises(RuntimeError):
+            server.allocate_client_id()
 `
   },
   {

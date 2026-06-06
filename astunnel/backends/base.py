@@ -5,6 +5,7 @@ Provides interface for Client ID extraction, conversion, injection, and custom h
 
 import socket
 import struct
+import ipaddress
 from typing import Dict, Any, Tuple
 
 
@@ -66,16 +67,14 @@ class BaseBackend:
 
     def convert_client_id_to_ipv6(self, client_id: bytes) -> str:
         """
-        Translates a 4-octet Client ID into its corresponding IPv6 address.
-        Uses standard mapping (e.g., embedding the client ID in RFC 4291 IPv4-mapped IPv6,
-        or a custom prefix like `2001:db8::/32`).
-        For example, c0a8:0105 (192.168.1.5) -> 2001:db8::192.168.1.5 or mapped ::ffff:192.168.1.5
+        Translates a 4-octet Client ID into its corresponding IPv6 address inside ULA (fc00::/7) range.
+        For example: c0a8:0105 -> fd00::c0a8:105
         """
         if len(client_id) != 4:
-            return "::1"
-        # Map to an IPv4-mapped IPv6 address "::ffff:A.B.C.D"
-        ip_str = f"{client_id[0]}.{client_id[1]}.{client_id[2]}.{client_id[3]}"
-        return f"::ffff:{ip_str}"
+            return "fd00::1"
+        # Construct a Unique Local Address (ULA): prefix fd00:: + 4-byte client ID
+        addr_bytes = b"\xfd\x00" + b"\x00" * 10 + client_id
+        return str(ipaddress.IPv6Address(addr_bytes))
 
     def parse_handshake_extra(self, extra_bytes: bytes) -> Dict[str, Any]:
         """

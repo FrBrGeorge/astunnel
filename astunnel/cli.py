@@ -103,6 +103,11 @@ def get_cli_parser() -> argparse.ArgumentParser:
         default="server.pem",
         help="Path to combine SSL Certificate & Private Key PEM file (default: server.pem)",
     )
+    srv_parser.add_argument(
+        "--pool",
+        default="10.0.0.0/24",
+        help="Client IP pool in standard network/bits CIDR format (default: 10.0.0.0/24)",
+    )
 
     # Backend specification for server
     srv_backend_group = srv_parser.add_argument_group("Server Backend Configurations")
@@ -173,6 +178,7 @@ def main(args_list: Optional[List[str]] = None) -> None:
             pem_path=parsed_args.pem,
             padding_mode=padding_int,
             sync_timeout=parsed_args.timeout,
+            pool=parsed_args.pool,
             console_level=parsed_args.console_level,
             logfile=parsed_args.logfile,
             file_level=parsed_args.file_level,

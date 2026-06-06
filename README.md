@@ -19,7 +19,7 @@ Supports custom packet bunching/padding layouts, multi-client ID routing, and ad
   - `none`: Disables padding.
   - `full`: Pads up to preferred bunch size with Junk packets of version 15.
   - `random`: Dynamic randomized floating pad size.
-- **Multi-Client ID Routing**: Allocates and maps 4-octet Client IDs that mimic IPv4 addresses; translates Client IDs to payload-specific targets (e.g. IPv6 address strings).
+- **Multi-Client ID Routing**: Allocates and maps 4-octet Client IDs from a configurable IPv4 subnet pool (`--pool`, default `10.0.0.0/24`). The first address of the configured subnet is locked and reserved for the server. Identifiers are converted/translated into Unique Local Address (ULA) IPv6 address strings starting with `fd00::` prefix (within the `fc00::/7` space).
 - **Three SSL Security Models**:
   - `insecure`: Disables peer certification checks.
   - `trusted`: Checks the direct SHA256 cryptographic fingerprint of the self-signed certificate.
@@ -36,7 +36,7 @@ pip install .
 
 ### 1. Launch the Server
 ```bash
-astunnel server --bind 0.0.0.0 --port 18443 --pem server.pem --padding full --timeout 0.25 --logfile server.log
+astunnel server --bind 0.0.0.0 --port 18443 --pem server.pem --pool 10.0.0.0/24 --padding full --timeout 0.25 --logfile server.log
 ```
 
 ### 2. Launch the Client

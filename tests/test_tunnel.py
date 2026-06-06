@@ -150,5 +150,28 @@ class TestBuncher(unittest.TestCase):
         self.assertEqual(c1 + c2, 50)
 
 
+class TestTunnelServerPool(unittest.TestCase):
+    """Verifies that TunnelServer client IP pool allocation works and reserves the first address."""
+
+    def test_pool_allocation_and_reservation(self):
+        from astunnel.server import TunnelServer
+        server = TunnelServer(pool="10.1.2.0/29")
+        # 10.1.2.0/29 has 8 addresses: 10.1.2.0 to 10.1.2.7.
+        # The first address (10.1.2.0) is reserved for server.
+        self.assertEqual(server.server_id, bytes([10, 1, 2, 0]))
+
+        # Dynamic allocation should start at 10.1.2.1 and proceed up to 10.1.2.7 (skipping 10.1.2.0)
+        allocated_ids = []
+        for _ in range(7):
+            allocated_ids.append(server.allocate_client_id())
+
+        self.assertEqual(allocated_ids[0], bytes([10, 1, 2, 1]))
+        self.assertEqual(allocated_ids[-1], bytes([10, 1, 2, 7]))
+
+        # Next attempts should raise RuntimeError as pool is full
+        with self.assertRaises(RuntimeError):
+            server.allocate_client_id()
+
+
 if __name__ == "__main__":
     unittest.main()

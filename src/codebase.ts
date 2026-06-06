@@ -817,7 +817,9 @@ class TestTunnelServerPool(unittest.TestCase):
         # Dynamic allocation should start at 10.1.2.1 and proceed up to 10.1.2.7 (skipping 10.1.2.0)
         allocated_ids = []
         for _ in range(7):
-            allocated_ids.append(server.allocate_client_id())
+            cid = server.allocate_client_id()
+            server.sessions[cid] = None
+            allocated_ids.append(cid)
 
         self.assertEqual(allocated_ids[0], bytes([10, 1, 2, 1]))
         self.assertEqual(allocated_ids[-1], bytes([10, 1, 2, 7]))

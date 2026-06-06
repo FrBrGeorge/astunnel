@@ -108,14 +108,20 @@ class TunnelClient:
     async def connect(self) -> None:
         """Establishes SSL handshakes and connects to the tunnel server."""
         ssl_ctx = self.get_ssl_context()
-        self.logger.warning("Connecting to SSL TCP Tunnel Server at %s:%d...", self.host, self.port)
+        self.logger.warning("Connecting to SSL TCP Tunnel Server at %s:%d (mode: %s)...", self.host, self.port, self.ssl_mode)
 
-        self.reader, self.writer = await asyncio.open_connection(
-            self.host, self.port, ssl=ssl_ctx
-        )
+        try:
+            self.reader, self.writer = await asyncio.open_connection(
+                self.host, self.port, ssl=ssl_ctx
+            )
+            self.logger.debug("Socket connection succeeded. Extra context: %s", self.writer.get_extra_info("peername"))
+        except Exception as e:
+            self.logger.error("Failed to establish TCP socket connection to %s:%d: %s", self.host, self.port, e, exc_info=True)
+            raise
 
         ssl_obj = self.writer.get_extra_info("ssl_object")
         if self.ssl_mode == "trusted":
+            self.logger.debug("Verifying server certificate fingerprint...")
             self.verify_fingerprint(ssl_obj)
 
         self.logger.info("TCP SSL Connection established. Initiating handshakes suggestion...")
@@ -124,6 +130,7 @@ class TunnelClient:
         backend_cls = get_backend_class(self.backend_name)
         self.backend_interim = backend_cls(self.backend_options)
         extra_fields = self.backend_interim.compile_handshake_extra(self.backend_options)
+        self.logger.debug("Compiled backend extra fields (%d bytes) for handshake", len(extra_fields))
 
         # Build Handshake Suggestion Packet:
         # - 4 octets: Client ID (suggested bytes)
@@ -142,23 +149,38 @@ class TunnelClient:
         )
 
         suggestion_pkt = Packet(VERSION_MGMT, MGMT_HANDSHAKE, handshake_payload)
+        self.logger.debug("Sending handshake suggestion packet to server: payload_size=%d", len(handshake_payload))
         self.writer.write(suggestion_pkt.to_bytes())
         await self.writer.drain()
+        self.logger.debug("Handshake suggestion packet drained successfully.")
 
         # Read Server handshake reply (management packet has 3-byte header)
-        header = await self.reader.readexactly(3)
+        self.logger.debug("Waiting for server handshake response (3 bytes header)...")
+        try:
+            header = await self.reader.readexactly(3)
+        except asyncio.IncompleteReadError as e:
+            self.logger.error("Server closed the connection during handshakes. Partial content: %s", e.partial, exc_info=True)
+            raise RuntimeError("Server closed connection during handshake.") from e
+
         first_byte = header[0]
         payload_len = struct.unpack("!H", header[1:3])[0]
         version = first_byte >> 4
         subtype = first_byte & 0x0F
+        self.logger.debug("Received response header from server: version=%d, subtype=%d, payload_len=%d", version, subtype, payload_len)
 
-        srv_payload = await self.reader.readexactly(payload_len)
+        self.logger.debug("Reading server handshake response payload (%d bytes)...", payload_len)
+        try:
+            srv_payload = await self.reader.readexactly(payload_len)
+        except asyncio.IncompleteReadError as e:
+            self.logger.error("Server closed connection while reading handshake payload: partial=%s", e.partial, exc_info=True)
+            raise RuntimeError("Server closed connection while reading handshake payload.") from e
 
         if version == VERSION_MGMT and subtype == MGMT_ERROR:
             self.logger.error("Server handshake error: %s", srv_payload.decode("utf-8"))
             raise RuntimeError(f"Server handshakes error: {srv_payload.decode('utf-8')}")
 
         if version != VERSION_MGMT or subtype != MGMT_HANDSHAKE:
+            self.logger.error("Unexpected packet type during handshake: version=%d, subtype=%d", version, subtype)
             raise RuntimeError("Invalid server handshake protocol response.")
 
         # Parse finalized Server Config
@@ -181,6 +203,7 @@ class TunnelClient:
         self.backend_inst = backend_cls(self.backend_options)
         server_options = self.backend_inst.parse_handshake_extra(server_extra)
         self.backend_inst.options.update(server_options)
+        self.logger.debug("Configured backend state with server extras. Backend Options: %s", self.backend_inst.options)
 
         self.buncher = Buncher(
             preferred_size=DEFAULT_BUNCH_SIZE,
@@ -191,18 +214,21 @@ class TunnelClient:
 
         # Start the backend if capable
         if hasattr(self.backend_inst, "start"):
+            self.logger.debug("Starting client-side backend...")
             try:
                 self.backend_inst.start(self.send_packet, self.client_id, self.logger, is_server=False)
             except Exception as e:
-                self.logger.error("Failed to start client-side backend: %s", e)
+                self.logger.error("Failed to start client-side backend: %s", e, exc_info=True)
 
         # Launch background tasks
+        self.logger.debug("Launching background Tasks: flusher, read loop")
         self._flusher_task = asyncio.create_task(self._bunch_timeout_flusher())
         self._reader_task = asyncio.create_task(self._read_tunnel_loop())
 
     async def send_packet(self, version: int, subtype: int, payload: bytes) -> None:
         """Sends a packet by queuing it to the client buncher."""
         if not self.is_connected or not self.buncher:
+            self.logger.warning("Attempted to send packet while tunnel is inactive. is_connected=%s", self.is_connected)
             raise RuntimeError("Tunnel is not active.")
 
         # Inject Client ID to payload for normal IPv4/IPv6 packet if available
@@ -210,27 +236,32 @@ class TunnelClient:
             payload = self.backend_inst.inject_client_id(payload, version, self.client_id)
 
         pkt = Packet(version, subtype, payload)
-        self.logger.debug("Client sending packet into queue: %s", pkt)
+        self.logger.debug("Client sending packet into queue: %s (payload length=%d)", pkt, len(payload))
 
         should_flush, flushed_bytes = self.buncher.add_packet(pkt)
         self.last_packet_time = asyncio.get_event_loop().time()
         if should_flush and flushed_bytes and self.writer:
+            self.logger.debug("Client buncher size threshold reached. Flushing %d bytes to server stream.", len(flushed_bytes))
             self.writer.write(flushed_bytes)
             await self.writer.drain()
 
     async def _read_tunnel_loop(self) -> None:
         """Background coroutine parsing server packets arriving over SSL."""
+        self.logger.debug("Client reader loop started.")
         buffer = b""
         try:
             while self.is_connected and self.reader:
                 data = await self.reader.read(4096)
                 if not data:
+                    self.logger.warning("Client reader loop received empty bytes (EOF). Server likely closed the connection.")
                     break
+                self.logger.debug("Client reader loop received %d raw bytes from SSL stream.", len(data))
                 buffer += data
 
                 while True:
                     pkt, consumed = Packet.from_bytes(buffer)
                     if not pkt:
+                        self.logger.debug("Incomplete packet in buffer (buffer size: %d bytes). Awaiting more data.", len(buffer))
                         break
                     buffer = buffer[consumed:]
 
@@ -242,10 +273,11 @@ class TunnelClient:
                     self.logger.debug("Client received packet over tunnel: %s", pkt)
                     self.handle_received_packet(pkt)
         except asyncio.CancelledError:
-            pass
+            self.logger.debug("Client reader task was cancelled.")
         except Exception as err:
-            self.logger.error("Exception in client reader coroutine: %s", err)
+            self.logger.error("Exception in client reader coroutine: %s", err, exc_info=True)
         finally:
+            self.logger.debug("Exiting client reader loop. Disconnecting.")
             await self.disconnect()
 
     def handle_received_packet(self, pkt: Packet) -> None:

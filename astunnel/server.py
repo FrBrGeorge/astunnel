@@ -170,18 +170,36 @@ class TunnelServer:
         self.logger.info("Incoming connection from %s", addr)
 
         # 1. READ HANDSHAKE MANAGEMENT PACKET (management packet has 3-byte header)
-        header_data = await reader.readexactly(3)
+        self.logger.debug("Reading handshake header (3 bytes) from %s...", addr)
+        try:
+            header_data = await reader.readexactly(3)
+        except asyncio.IncompleteReadError as e:
+            self.logger.warning("Connection closed by peer %s before handshake header was completed. Partial data: %s", addr, e.partial)
+            writer.close()
+            return
+        except Exception as e:
+            self.logger.error("Error reading handshake header from %s: %s", addr, e, exc_info=True)
+            writer.close()
+            return
+
         first_byte = header_data[0]
         payload_len = struct.unpack("!H", header_data[1:3])[0]
         version = first_byte >> 4
         subtype = first_byte & 0x0F
+        self.logger.debug("Handshake header from %s: version=%d, subtype=%d, payload_len=%d", addr, version, subtype, payload_len)
 
         if version != VERSION_MGMT or subtype != MGMT_HANDSHAKE:
-            self.logger.error("Invalid first packet. Expected Handsake management type.")
+            self.logger.error("Invalid first packet from %s. Expected Handshake management type. Got version=%d, subtype=%d", addr, version, subtype)
             writer.close()
             return
 
-        payload = await reader.readexactly(payload_len)
+        self.logger.debug("Reading handshake payload of %d bytes from %s...", payload_len, addr)
+        try:
+            payload = await reader.readexactly(payload_len)
+        except asyncio.IncompleteReadError as e:
+            self.logger.error("Connection closed by peer %s while reading handshake payload: partial=%s", addr, e.partial, exc_info=True)
+            writer.close()
+            return
 
         # Parse Handshake Payload:
         # - 4 octets: requested Client ID (e.g. \x00\x00\x00\x00 if none)
@@ -191,7 +209,7 @@ class TunnelServer:
         # - n octets: backend name (string)
         # - remaining: backend-specific extra arguments
         if len(payload) < 10:
-            self.logger.error("Handshake payload too short.")
+            self.logger.error("Handshake payload too short from %s (length=%d). Expected >= 10.", addr, len(payload))
             writer.close()
             return
 
@@ -201,7 +219,7 @@ class TunnelServer:
         backend_len = payload[9]
 
         if len(payload) < 10 + backend_len:
-            self.logger.error("Handshake payload corrupt: backend string bounds out of reach")
+            self.logger.error("Handshake payload corrupt from %s: backend string bounds out of reach with length %d", addr, len(payload))
             writer.close()
             return
 
@@ -209,7 +227,8 @@ class TunnelServer:
         extra_bytes = payload[10 + backend_len :]
 
         self.logger.info(
-            "Client requested: ID=%s, PadMode=%d, Timeout=%.3fs, Backend=%s",
+            "Client at %s requested: ID=%s, PadMode=%d, Timeout=%.3fs, Backend=%s",
+            addr,
             requested_client_id.hex(),
             req_padding_mode,
             req_sync_timeout,
@@ -220,16 +239,17 @@ class TunnelServer:
         # Resolve Client ID
         if requested_client_id == b"\x00\x00\x00\x00":
             assigned_id = self.allocate_client_id()
+            self.logger.debug("Allocated new Client ID: %s for %s", assigned_id.hex(), addr)
         else:
             if requested_client_id == self.server_id:
-                self.logger.error("Client ID %s is reserved for the server. Closing.", requested_client_id.hex())
+                self.logger.error("Client ID %s from %s is reserved for the server. Closing.", requested_client_id.hex(), addr)
                 err_pkt = Packet(VERSION_MGMT, MGMT_ERROR, b"Client ID is reserved for the server")
                 writer.write(err_pkt.to_bytes())
                 await writer.drain()
                 writer.close()
                 return
             if requested_client_id in self.sessions:
-                self.logger.error("Client ID %s already in use. Closing.", requested_client_id.hex())
+                self.logger.error("Client ID %s from %s already in use. Closing.", requested_client_id.hex(), addr)
                 # Send MGMT_ERROR
                 err_pkt = Packet(VERSION_MGMT, MGMT_ERROR, b"Client ID already assigned")
                 writer.write(err_pkt.to_bytes())
@@ -237,6 +257,7 @@ class TunnelServer:
                 writer.close()
                 return
             assigned_id = requested_client_id
+            self.logger.debug("Confirmed client-requested Client ID: %s for %s", assigned_id.hex(), addr)
 
         # Use server-configured values for padding & timeout (allocated/negotiated)
         assigned_padding = self.padding_mode
@@ -261,8 +282,10 @@ class TunnelServer:
             + server_extra
         )
         reply_pkt = Packet(VERSION_MGMT, MGMT_HANDSHAKE, reply_payload)
+        self.logger.debug("Sending approved handshake response to %s...", addr)
         writer.write(reply_pkt.to_bytes())
         await writer.drain()
+        self.logger.debug("Approved handshake reply drained to %s.", addr)
 
         # Establish Session
         session = ClientSession(
@@ -274,64 +297,73 @@ class TunnelServer:
             backend=backend_inst,
         )
         self.sessions[assigned_id] = session
-        self.logger.warning("Tunnel established for Client: %s", assigned_id.hex())
+        self.logger.warning("Tunnel established for Client: %s at peer %s", assigned_id.hex(), addr)
 
         # Start the backend if capable
         if hasattr(backend_inst, "start"):
+            self.logger.debug("Starting server-side backend for Client-ID: %s...", assigned_id.hex())
             async def send_to_client(version: int, subtype: int, payload: bytes):
                 resp_pkt = Packet(version, subtype, payload)
+                self.logger.debug("Server backend scheduling packet to send to Client-ID: %s : %s", assigned_id.hex(), resp_pkt)
                 should_flush, flushed_bytes = session.buncher.add_packet(resp_pkt)
                 session.last_packet_time = asyncio.get_event_loop().time()
                 if should_flush and flushed_bytes:
                     try:
+                        self.logger.debug("Server buncher threshold met. Sending %d bytes to Client-ID: %s", len(flushed_bytes), assigned_id.hex())
                         session.writer.write(flushed_bytes)
                         await session.writer.drain()
                     except Exception as e:
-                        self.logger.error("Error sending packet to client: %s", e)
+                        self.logger.error("Error sending packet to Client-ID %s: %s", assigned_id.hex(), e, exc_info=True)
             try:
                 backend_inst.start(send_to_client, assigned_id, self.logger, is_server=True)
             except Exception as e:
-                self.logger.error("Failed to start server-side backend: %s", e)
+                self.logger.error("Failed to start server-side backend: %s", e, exc_info=True)
 
         # LOOP TO READ STREAM FROM THIS CLIENT
+        self.logger.debug("Entering read loop for Client-ID: %s (%s)...", assigned_id.hex(), addr)
         buffer = b""
         try:
             while True:
                 data = await reader.read(4096)
                 if not data:
+                    self.logger.warning("Read EOF (empty bytes) from Client-ID %s (%s). Peer closed connection.", assigned_id.hex(), addr)
                     break
+                self.logger.debug("Received %d raw stream bytes from Client-ID %s (%s)", len(data), assigned_id.hex(), addr)
                 buffer += data
 
                 while True:
                     pkt, consumed = Packet.from_bytes(buffer)
                     if not pkt:
+                        self.logger.debug("Incomplete packet in buffer from Client-ID %s (buffer size: %d bytes). Awaiting data.", assigned_id.hex(), len(buffer))
                         break
                     buffer = buffer[consumed:]
 
                     # Ignore padding packets
                     if pkt.version == VERSION_PADDING:
-                        self.logger.debug("Received padding packet. Dropped.")
+                        self.logger.debug("Received padding packet from Client-ID: %s. Dropped.", assigned_id.hex())
                         continue
 
                     # Handover to backend
                     await self.process_incoming_packet(session, pkt)
         except asyncio.IncompleteReadError:
-            self.logger.info("Connection terminated abruptly by peer.")
+            self.logger.info("Connection terminated abruptly by peer (IncompleteReadError) for Client %s (%s).", assigned_id.hex(), addr)
         except Exception as err:
-            self.logger.error("Exception handling client connection: %s", err)
+            self.logger.error("Exception handling client connection for Client %s (%s): %s", assigned_id.hex(), addr, err, exc_info=True)
         finally:
-            self.logger.warning("Tunnel closed for Client: %s", assigned_id.hex())
+            self.logger.warning("Tunnel closed for Client: %s (%s)", assigned_id.hex(), addr)
             if assigned_id in self.sessions:
                 # Flush everything remaining
+                self.logger.debug("Flushing remaining bunched bytes for Client: %s", assigned_id.hex())
                 flushed = session.buncher.flush()
                 if flushed:
                     try:
                         writer.write(flushed)
                         await writer.drain()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self.logger.debug("Error flushing remnants on session close: %s", e)
                 # Stop backend if needed
                 if hasattr(session.backend, "stop"):
+                    self.logger.debug("Stopping server-side backend for Client-ID: %s", assigned_id.hex())
                     session.backend.stop()
                 del self.sessions[assigned_id]
             writer.close()

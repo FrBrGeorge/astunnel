@@ -227,7 +227,7 @@ class TunnelServer:
 
         # Get Backend class and initialize
         backend_cls = get_backend_class(backend_name)
-        backend_inst = backend_cls({"packet_type_filter": 0})  # default dummy template options
+        backend_inst = backend_cls({})  # let backend define its own defaults through constructor / options
         backend_options = backend_inst.parse_handshake_extra(extra_bytes)
         backend_inst.options.update(backend_options)
 
@@ -318,27 +318,16 @@ class TunnelServer:
             # Wait! In general, keep logging but continue or map routing
             # In simple echo, we can let it bounce back.
 
-        # Let's assess backend rules
-        if session.backend.backend_name == "echo":
-            # Test Echo backend checks filter
-            if session.backend.should_echo_packet(pkt.version):
-                # Bouncing it back! We construct a return packet where the Client ID stays the same,
-                # or we swap sources/destinations. For an Echo server, we can return the exact payload back!
-                response_payload = pkt.payload
-                # In reply, inject client ID back to payload just to be sure
-                response_payload = session.backend.inject_client_id(
-                    response_payload, pkt.version, session.client_id
-                )
-
-                self.logger.debug("Echoing packet ver %d back to client...", pkt.version)
-                resp_pkt = Packet(pkt.version, pkt.subtype, response_payload)
-
-                # Queue to server's buncher for this connection
-                should_flush, flushed_bytes = session.buncher.add_packet(resp_pkt)
-                session.last_packet_time = asyncio.get_event_loop().time()
-                if should_flush and flushed_bytes:
-                    session.writer.write(flushed_bytes)
-                    await session.writer.drain()
+        # Process via backend to see if there's any response/routing packet
+        resp_pkt = session.backend.process_packet(pkt, session.client_id)
+        if resp_pkt is not None:
+            self.logger.debug("Sending processed packet back to client: %s", resp_pkt)
+            # Queue to server's buncher for this connection
+            should_flush, flushed_bytes = session.buncher.add_packet(resp_pkt)
+            session.last_packet_time = asyncio.get_event_loop().time()
+            if should_flush and flushed_bytes:
+                session.writer.write(flushed_bytes)
+                await session.writer.drain()
 
     async def _bunch_timeout_flusher(self) -> None:
         """Periodic checker executing timeouts flushes for active client tunnels."""

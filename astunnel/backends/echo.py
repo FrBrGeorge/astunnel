@@ -5,6 +5,7 @@ Bounces packets back to the client after performing Client ID management and opt
 
 from typing import Dict, Any
 from astunnel.backends.base import BaseBackend
+from astunnel.common import Packet
 
 
 class EchoBackend(BaseBackend):
@@ -50,3 +51,17 @@ class EchoBackend(BaseBackend):
         if self.packet_type_filter == 0:
             return True
         return version == self.packet_type_filter
+
+    def process_packet(self, pkt: Packet, client_id: bytes) -> Any:
+        """
+        Processes an incoming packet and returns the response Packet to send
+        back if it matches the filtering rules. Otherwise returns None.
+        """
+        if self.should_echo_packet(pkt.version):
+            response_payload = pkt.payload
+            # In reply, inject client ID back to payload just to be sure
+            response_payload = self.inject_client_id(
+                response_payload, pkt.version, client_id
+            )
+            return Packet(pkt.version, pkt.subtype, response_payload)
+        return None

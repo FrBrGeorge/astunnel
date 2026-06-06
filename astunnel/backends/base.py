@@ -90,3 +90,11 @@ class BaseBackend:
         By default, returns empty bytes.
         """
         return b""
+
+    def process_packet(self, pkt: Any, client_id: bytes) -> Any:
+        """
+        Process an incoming packet. Returns an optional Packet to send back
+        or route, or None if the packet is consumed or filtered out.
+        By default on BaseBackend, returns None (no response/routing).
+        """
+        return None

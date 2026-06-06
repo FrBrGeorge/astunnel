@@ -1,0 +1,64 @@
+# AI System Prompt: Optimized SSL TCP Packet Tunneling Gateway
+
+## Objective
+Implement a high-performance asyncio Python client-server solution that establishes secure SSL TCP connections and tunnels payloads wrapped as customized packets.
+
+## Packet Architecture & Protocol Formats
+Each packet is handled dynamically based on its Payload Version (the first 4 bits of the raw packet bytes):
+- **IP Packets (IPv4/IPv6)**:
+  - **IPv4 (Version 4)** and **IPv6 (Version 6)** packets are passed **as-is (unencapsulated, without extra header)**.
+  - The total length of the packet is retrieved directly from standard IP header fields:
+    - **IPv4**: Big-endian unsigned short at bytes 2-3 (Total Length).
+    - **IPv6**: Big-endian unsigned short at bytes 4-5 (Payload Length), adding 40 bytes for the standard header.
+- **Non-IP Packets (Management/Padding)**:
+  - **Management (Version 0)** and **Padding (Version 15)** packets are prefixed with a **3-octet custom header**:
+    - **Byte 0**: Unified Octet:
+      - Bits 7–4 (High bits): Payload Version (`0` = Management, `15` = Padding).
+      - Bits 3–0 (Low bits): Custom Subtype (`1` = Handshake Exchange, `2` = Error Notification for Management, or `0` for Padding).
+    - **Bytes 1–2**: Unsigned 16-bit Integer (Big-Endian) representing the precise length of the payload in bytes.
+  - **Payload**: Follows immediately after the 3-octet header.
+
+## Management Handshake Protocol
+1. **Client Proposal**: Client initiates by sending a handshake packet (Version `0`, Subtype `1`), containing suggested parameters inside its payload:
+   - Bytes 0-3: Suggested Client ID (`0.0.0.0` or empty to prompt server allocation).
+   - Byte 4: Preferred Padding Mode.
+   - Bytes 5-8: Big-Endian float representing requested syncing timeout.
+   - Byte 9: Backend String length `n`.
+   - Bytes 10 to (10 + `n`): Backend Name string (e.g. `b"echo"`).
+   - Remaining Bytes: Custom backend-specific setup arguments (e.g. packet type filter).
+2. **Server Configuration**: Server validates options. If accepted, replies with a matching handshake packet containing finalized values. If rejected (id collision or unsupported backend), server responds with an error management packet (Version `0`, Subtype `2`) containing error string, and immediately closes connection.
+
+## Packet Bunching Engine
+Accumulate outbound packets inside a queue and flush them together. Force flush if any condition matches:
+- Next packet in queue exceeds the remainder of preferred bunch size (aimed at standard TCP MSS sizes, e.g., 1400 bytes).
+- Syncing timer reaches its specified timeout (forces a flush; note that 0.0s syncs instantly on every packet).
+- High priority DSCP settings are detected in IPv4 (ToS byte, high 6 bits represent Expedited Forwarding classes, e.g., 46) or IPv6 (Traffic Class, high 6 bits represent EF/CS priority classes) payloads demanding immediate transmission.
+- **Padding Options**:
+  - Mode 1: No padding.
+  - Mode 2: Re-align current bunch to preferred limit by appending a padding packet (version 15) filled with random bytes.
+  - Mode 3: Random padding target boundary between starting size and preferred bunch size.
+
+## Multi-Client Tracking & IP Translation
+- Multiple client sockets are supported over a single server listener. Each client is identified by a 4-octet `client_id` (IP style).
+- Backends provide translation functions connecting `client_id` with payload formats (e.g., mapping client_id into a fully compliant IPv6 address string).
+
+## Backends Ecosystem
+- **Test Echo Backend**: Returns the packet to client (Server echoes it back). It processes client-side filter options: e.g. if `--packet-type-filter` is 4, only IPv4 packets are bounced back; IPv6 are dropped.
+
+## SSL Tls Verification
+- `server` reads combined public cert + private key PEM files. Generates a self-signed cert on boot if file is missing.
+- `client` supports 3 modes:
+  - `insecure`: Disables hostname/chain verification.
+  - `trusted`: Verifies peer certificate's SHA256 cryptographic fingerprint against pre-shared hash string.
+  - `secure`: Runs standard, fully strict CA verification checks.
+
+## CLI Cascade & Execution Commands
+- Use a cascaded `argparse` configuration:
+  - **Common options** inherited by both subcommands: log levels, `--logfile`, `--padding` (modes: `none`, `full`, `random`), and `--timeout`.
+  - **`server` subcommand**: configures binding with `--bind` (IP) and `--port` parameters, and `--pem` certification files.
+  - **`client` subcommand**: accepts positional `server` argument in `host:port` format, `--ssl-mode`, and `--client-id` identity.
+- Code reuse: Keep common components cleanly separated in `common.py` within the `astunnel` package.
+- No inline constants: Declare variables clearly at script headers.
+- Max line length is strictly set to 100 characters.
+- Use `pathlib` for all filesystem operations.
+- Avoid silencing errors with bare try-excepts; log all events cleanly.

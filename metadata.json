@@ -1,0 +1,6 @@
+{
+  "name": "Async SSL TCP Tunnel Simulator",
+  "description": "Interactive dashboard, code explorer, and simulator for an asyncio SSL TCP packet-tunneling client/server. Visualizes packet bunching, custom version padding, IP translation, and management packet handshakes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

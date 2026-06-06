@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astunnel"
+dynamic = ["version"]
+description = "Asyncio SSL TCP packet-tunneling client/server suite with packet bunching and custom padding"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.scripts]
+astunnel = "astunnel.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "astunnel.__version__"}

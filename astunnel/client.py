@@ -271,7 +271,11 @@ class TunnelClient:
 
                     # Delegate to handler
                     self.logger.debug("Client received packet over tunnel: %s", pkt)
-                    self.handle_received_packet(pkt)
+                    try:
+                        self.handle_received_packet(pkt)
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error("Error handling received packet: %s", e, exc_info=True)
         except asyncio.CancelledError:
             self.logger.debug("Client reader task was cancelled.")
         except Exception as err:

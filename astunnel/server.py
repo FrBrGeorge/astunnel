@@ -344,7 +344,11 @@ class TunnelServer:
                         continue
 
                     # Handover to backend
-                    await self.process_incoming_packet(session, pkt)
+                    try:
+                        await self.process_incoming_packet(session, pkt)
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error("Error processing packet from Client-ID %s: %s", assigned_id.hex(), e, exc_info=True)
         except asyncio.IncompleteReadError:
             self.logger.info("Connection terminated abruptly by peer (IncompleteReadError) for Client %s (%s).", assigned_id.hex(), addr)
         except Exception as err:

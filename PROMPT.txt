@@ -27,6 +27,7 @@ Each packet is handled dynamically based on its Payload Version (the first 4 bit
    - Bytes 10 to (10 + `n`): Backend Name string (e.g. `b"echo"`).
    - Remaining Bytes: Custom backend-specific setup arguments (e.g. packet type filter).
 2. **Server Configuration**: Server validates options. If accepted, replies with a matching handshake packet containing finalized values. If rejected (id collision or unsupported backend), server responds with an error management packet (Version `0`, Subtype `2`) containing error string, and immediately closes connection.
+3. **Connection Lifecycle**: Once the tunnel is successfully established, the underlying client-server network connection must remain open persistently. Individual packet routing or processing errors within the backend loops must be caught and logged gracefully rather than terminating the whole session. The socket stream must not be closed unless an explicit shut down is initiated (e.g. peer shut down), or the connection is deliberately closed due to a terminal setup/handshake error.
 
 ## Packet Bunching Engine
 Accumulate outbound packets inside a queue and flush them together. Force flush if any condition matches:

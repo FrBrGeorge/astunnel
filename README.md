@@ -45,6 +45,26 @@ To run a client, specify the server address as a positional `host:port` argument
 astunnel client 127.0.0.1:18443 --client-id 10.0.0.5 --ssl-mode insecure --padding random --timeout 0.1 --logfile client.log
 ```
 
+## Backends Ecosystem
+
+### Echo Backend (Default)
+Bounces packets back to the client. Ideal for testing connectivity and filtering options.
+
+### Linux TUN Backend (`--backend tun`)
+Acquires an available virtual TUN device (e.g., `tun0`), brings the interface link up, configures peer-to-peer IPv4 and IPv6 addresses derived from the Client ID, and forwards bidirectional raw packets between the TUN interface and the secure SSL tunnel stream without extra overhead.
+
+*Note: Access to virtual network interfaces requires root privileges (administrative access is required to allocate and configure TUN devices).*
+
+#### Server:
+```bash
+astunnel server --bind 0.0.0.0 --port 18443 --pem server.pem --pool 10.1.2.0/24 --backend tun
+```
+
+#### Client:
+```bash
+astunnel client 127.0.0.1:18443 --ssl-mode insecure --backend tun
+```
+
 ## Running Tests
 Run unittest suite:
 ```bash

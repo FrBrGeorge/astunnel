@@ -45,6 +45,7 @@ Accumulate outbound packets inside a queue and flush them together. Force flush 
 
 ## Backends Ecosystem
 - **Test Echo Backend**: Returns the packet to client (Server echoes it back). It processes client-side filter options: e.g. if `--packet-type-filter` is 4, only IPv4 packets are bounced back; IPv6 are dropped.
+- **Linux TUN Backend**: Acquires an available TUN device, configures peer-to-peer IPv4 and IPv6 addresses derived from the Client ID, and forwards bidirectional raw packets between the TUN interface and the tunnel.
 
 ## SSL Tls Verification
 - `server` reads combined public cert + private key PEM files. Generates a self-signed cert on boot if file is missing.
@@ -55,7 +56,7 @@ Accumulate outbound packets inside a queue and flush them together. Force flush 
 
 ## CLI Cascade & Execution Commands
 - Use a cascaded `argparse` configuration:
-  - **Common options** inherited by both subcommands: log levels, `--logfile`, `--padding` (modes: `none`, `full`, `random`), and `--timeout`.
+  - **Common options** inherited by both subcommands: log levels, `--logfile`, `--padding` (modes: `none`, `full`, `random`), `--timeout`, and `--backend`.
   - **`server` subcommand**: configures binding with `--bind` (IP), `--port` parameters, `--pem` certification files, and `--pool` client IP pool.
   - **`client` subcommand**: accepts positional `server` argument in `host:port` format, `--ssl-mode`, and `--client-id` identity.
 - Code reuse: Keep common components cleanly separated in `common.py` within the `astunnel` package.

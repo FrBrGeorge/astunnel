@@ -189,6 +189,13 @@ class TunnelClient:
         )
         self.is_connected = True
 
+        # Start the backend if capable
+        if hasattr(self.backend_inst, "start"):
+            try:
+                self.backend_inst.start(self.send_packet, self.client_id, self.logger, is_server=False)
+            except Exception as e:
+                self.logger.error("Failed to start client-side backend: %s", e)
+
         # Launch background tasks
         self._flusher_task = asyncio.create_task(self._bunch_timeout_flusher())
         self._reader_task = asyncio.create_task(self._read_tunnel_loop())
@@ -242,9 +249,11 @@ class TunnelClient:
             await self.disconnect()
 
     def handle_received_packet(self, pkt: Packet) -> None:
-        """Prints or pipes parsed packets."""
-        # This will be customized or subclassed. For clients, it prints to console or files.
-        self.logger.info("Tunnel Packet Rx: [Version %d / Sub %d] Payload size=%d", pkt.version, pkt.subtype, len(pkt.payload))
+        """Prints or pipes parsed packets or forwards to backend."""
+        if self.backend_inst and hasattr(self.backend_inst, "receive_packet"):
+            self.backend_inst.receive_packet(pkt)
+        else:
+            self.logger.info("Tunnel Packet Rx: [Version %d / Sub %d] Payload size=%d", pkt.version, pkt.subtype, len(pkt.payload))
 
     async def _bunch_timeout_flusher(self) -> None:
         """Routine performing syncing-timeout flushes."""
@@ -269,6 +278,10 @@ class TunnelClient:
             return
         self.is_connected = False
         self.logger.warning("Terminating client tunnel connection.")
+
+        # Stop backend if needed
+        if self.backend_inst and hasattr(self.backend_inst, "stop"):
+            self.backend_inst.stop()
 
         # Cancel background tasks
         if self._flusher_task:

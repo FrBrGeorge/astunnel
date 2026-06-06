@@ -76,6 +76,12 @@ def get_cli_parser() -> argparse.ArgumentParser:
         type=float,
         help="Sync timeout in float seconds. 0.0 means immediate send (default: 0.5)",
     )
+    tunnel_group.add_argument(
+        "--backend",
+        default="echo",
+        choices=["echo", "tun"],
+        help="Backend application layer protocol (default: echo)",
+    )
 
     # 2. MAIN PARSER inherits root options
     main_parser = argparse.ArgumentParser(parents=[root_parser])
@@ -109,15 +115,6 @@ def get_cli_parser() -> argparse.ArgumentParser:
         help="Client IP pool in standard network/bits CIDR format (default: 10.0.0.0/24)",
     )
 
-    # Backend specification for server
-    srv_backend_group = srv_parser.add_argument_group("Server Backend Configurations")
-    srv_backend_group.add_argument(
-        "--backend",
-        default="echo",
-        choices=["echo"],
-        help="Backend application layer protocol (default: echo)",
-    )
-
     # ---- CLIENT SUBCOMMAND ----
     cli_parser = subparsers.add_parser(
         "client",
@@ -146,13 +143,7 @@ def get_cli_parser() -> argparse.ArgumentParser:
     )
 
     # Backend specification for Client
-    cli_backend_group = cli_parser.add_argument_group("Client Backend Configurations")
-    cli_backend_group.add_argument(
-        "--backend",
-        default="echo",
-        choices=["echo"],
-        help="Backend application layer protocol (default: echo)",
-    )
+    cli_backend_group = cli_parser.add_argument_group("Echo Backend Configurations")
     cli_backend_group.add_argument(
         "--packet-type-filter",
         default=0,

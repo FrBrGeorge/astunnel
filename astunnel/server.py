@@ -244,7 +244,7 @@ class TunnelServer:
 
         # Get Backend class and initialize
         backend_cls = get_backend_class(backend_name)
-        backend_inst = backend_cls({})  # let backend define its own defaults through constructor / options
+        backend_inst = backend_cls({"server_id": self.server_id})  # let backend define its own defaults through constructor / options
         backend_options = backend_inst.parse_handshake_extra(extra_bytes)
         backend_inst.options.update(backend_options)
 
@@ -275,6 +275,23 @@ class TunnelServer:
         )
         self.sessions[assigned_id] = session
         self.logger.warning("Tunnel established for Client: %s", assigned_id.hex())
+
+        # Start the backend if capable
+        if hasattr(backend_inst, "start"):
+            async def send_to_client(version: int, subtype: int, payload: bytes):
+                resp_pkt = Packet(version, subtype, payload)
+                should_flush, flushed_bytes = session.buncher.add_packet(resp_pkt)
+                session.last_packet_time = asyncio.get_event_loop().time()
+                if should_flush and flushed_bytes:
+                    try:
+                        session.writer.write(flushed_bytes)
+                        await session.writer.drain()
+                    except Exception as e:
+                        self.logger.error("Error sending packet to client: %s", e)
+            try:
+                backend_inst.start(send_to_client, assigned_id, self.logger, is_server=True)
+            except Exception as e:
+                self.logger.error("Failed to start server-side backend: %s", e)
 
         # LOOP TO READ STREAM FROM THIS CLIENT
         buffer = b""
@@ -313,6 +330,9 @@ class TunnelServer:
                         await writer.drain()
                     except Exception:
                         pass
+                # Stop backend if needed
+                if hasattr(session.backend, "stop"):
+                    session.backend.stop()
                 del self.sessions[assigned_id]
             writer.close()
             try:
